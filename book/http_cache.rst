@@ -48,7 +48,7 @@ HTTP キャッシュについて初めて学ぶ方は、Ryan Tomayko 氏の記�
 
 .. index::
    single: Cache; Proxy
-   single: Cache; Reverse Proxy
+   single: Cache; Reverse proxy
    single: Cache; Gateway
 
 .. _gateway-caches:
@@ -99,7 +99,7 @@ Symfony2 リバースプロキシもこの 1 つです。
 これらのキャッシュを利用する場合、キャッシュデータを直接管理することはできませんので、レスポンスで HTTP キャシュの命令セットを使うことになります。
 
 .. index::
-   single: Cache; Symfony2 Reverse Proxy
+   single: Cache; Symfony2 reverse proxy
 
 .. _`symfony-gateway-cache`:
 
@@ -129,7 +129,10 @@ Symfony2 アプリケーションには、あらかじめキャッシュカー�
     $kernel->loadClassCache();
     // デフォルトの AppKernel を AppCache でラップ
     $kernel = new AppCache($kernel);
-    $kernel->handle(Request::createFromGlobals())->send();
+    $request = Request::createFromGlobals();
+    $response = $kernel->handle($request);
+    $response->send();
+    $kernel->terminate($request, $response);
 
 これですぐに、キャッシュカーネルがリバースプロキシとして動作し始めます。
 つまり、アプリケーションからのレスポンスをキャッシュし、クライアントにキャッシュを返します。
@@ -148,7 +151,10 @@ Symfony2 アプリケーションには、あらかじめキャッシュカー�
 ::
 
     // app/AppCache.php
-    class AppCache extends Cache
+
+    use Symfony\Bundle\FrameworkBundle\HttpCache\HttpCache;
+
+    class AppCache extends HttpCache
     {
         protected function getOptions()
         {
@@ -237,7 +243,7 @@ HTTP では、次の 4 つのレスポンスキャッシュヘッダーが定義
     :ref:`http-expiration-validation` section.
 
 .. index::
-   single: Cache; Cache-Control Header
+   single: Cache; Cache-Control header
    single: HTTP headers; Cache-Control
 
 Cache-Control ヘッダー
@@ -346,7 +352,7 @@ The HTTP specification defines two caching models:
   until the cached version reaches its expiration time and becomes "stale".
 
 * When pages are really dynamic (i.e. their representation changes often),
-  the `validation model`_ model is often necessary. With this model, the
+  the `validation model`_ is often necessary. With this model, the
   cache stores the response, but asks the server on each request whether
   or not the cached response is still valid. The application uses a unique
   response identifier (the ``Etag`` header) and/or a timestamp (the ``Last-Modified``
@@ -375,7 +381,7 @@ on a cache to store and return "fresh" responses.
     are much more beautiful than its cover.
 
 .. index::
-   single: Cache; HTTP Expiration
+   single: Cache; HTTP expiration
 
 有効期限
 ~~~~~~~~
@@ -414,10 +420,12 @@ The resulting HTTP header will look like this::
     The ``setExpires()`` method automatically converts the date to the GMT
     timezone as required by the specification.
 
-The ``Expires`` header suffers from two limitations. First, the clocks on the
-Web server and the cache (e.g. the browser) must be synchronized. Then, the
-specification states that "HTTP/1.1 servers should not send ``Expires`` dates
-more than one year in the future."
+Note that in HTTP versions before 1.1 the origin server wasn't required to
+send the ``Date`` header. Consequently the cache (e.g. the browser) might
+need to rely onto his local clock to evaluate the ``Expires`` header making
+the lifetime calculation vulnerable to clock skew. Another limitation
+of the ``Expires`` header is that the specification states that "HTTP/1.1
+servers should not send ``Expires`` dates more than one year in the future."
 
 .. index::
    single: Cache; Cache-Control header
@@ -500,6 +508,7 @@ md5 of the content::
     {
         $response = $this->render('MyBundle:Main:index.html.twig');
         $response->setETag(md5($response->getContent()));
+        $response->setPublic(); // make sure the response is public/cacheable
         $response->isNotModified($this->getRequest());
 
         return $response;
@@ -551,7 +560,14 @@ header value::
         $date = $authorDate > $articleDate ? $authorDate : $articleDate;
 
         $response->setLastModified($date);
-        $response->isNotModified($this->getRequest());
+        // Set response as public. Otherwise it will be private by default.
+        $response->setPublic();
+
+        if ($response->isNotModified($this->getRequest())) {
+            return $response;
+        }
+
+        // do more work to populate the response will the full content
 
         return $response;
     }
@@ -569,7 +585,7 @@ code.
     whether or not the resource has been updated since it was cached.
 
 .. index::
-   single: Cache; Conditional Get
+   single: Cache; Conditional get
    single: HTTP; 304
 
 .. _optimizing-cache-validation:
@@ -586,14 +602,17 @@ exposing a simple and efficient pattern::
     {
         // Get the minimum information to compute
         // the ETag or the Last-Modified value
-        // (based on the Request, data are retrieved from
+        // (based on the Request, data is retrieved from
         // a database or a key-value store for instance)
-        $article = // ...
+        $article = ...;
 
         // create a Response with a ETag and/or a Last-Modified header
         $response = new Response();
         $response->setETag($article->computeETag());
         $response->setLastModified($article->getPublishedAt());
+        
+        // Set response as public. Otherwise it will be private by default.
+        $response->setPublic();
 
         // Check that the Response is not modified for the given Request
         if ($response->isNotModified($this->getRequest())) {
@@ -601,7 +620,7 @@ exposing a simple and efficient pattern::
             return $response;
         } else {
             // do more work here - like retrieving more data
-            $comments = // ...
+            $comments = ...;
             
             // or render a template with the $response you've already started
             return $this->render(
@@ -721,14 +740,15 @@ as this is the only useful one outside of Akama誰 context:
 
 .. code-block:: html
 
+    <!doctype html>
     <html>
         <body>
-            Some content
+            ... some content
 
             <!-- Embed the content of another page here -->
             <esi:include src="http://..." />
 
-            More content
+            ... more content
         </body>
     </html>
 
@@ -789,6 +809,7 @@ independent of the rest of the page.
     public function indexAction()
     {
         $response = $this->render('MyBundle:MyController:index.html.twig');
+        // set the shared max age - the also marks the response as public
         $response->setSharedMaxAge(600);
 
         return $response;
@@ -796,7 +817,7 @@ independent of the rest of the page.
 
 In this example, we've given the full-page cache a lifetime of ten minutes.
 Next, let's include the news ticker in the template by embedding an action.
-This is done via the ``render`` helper (See `templating-embedding-controller`
+This is done via the ``render`` helper (See :ref:`templating-embedding-controller`
 for more details).
 
 As the embedded content comes from another page (or controller for that
@@ -889,7 +910,9 @@ the ``_internal`` route:
 
     Since this route allows all actions to be accessed via a URL, you might
     want to protect it by using the Symfony2 firewall feature (by allowing
-    access to your reverse proxy's IP range).
+    access to your reverse proxy's IP range). See the :ref:`Securing by IP<book-security-securing-ip>` 
+    section of the :doc:`Security Chapter </book/security>` for more information 
+    on how to do this.
 
 One great advantage of this caching strategy is that you can make your
 application as dynamic as needed and at the same time, hit the application as
@@ -931,8 +954,9 @@ too far away in the future.
 
 .. note::
 
-    It's also because there is no invalidation mechanism that you can use any
-    reverse proxy without changing anything in your application code.
+    Since invalidation is a topic specific to each type of reverse proxy,
+    if you don't worry about invalidation, you can switch between reverse
+    proxies without changing anything in your application code.
 
 Actually, all reverse proxies provide ways to purge cached data, but you
 should avoid them as much as possible. The most standard way is to purge the
@@ -942,7 +966,10 @@ Here is how you can configure the Symfony2 reverse proxy to support the
 ``PURGE`` HTTP method::
 
     // app/AppCache.php
-    class AppCache extends Cache
+
+    use Symfony\Bundle\FrameworkBundle\HttpCache\HttpCache;
+
+    class AppCache extends HttpCache
     {
         protected function invalidate(Request $request)
         {
@@ -951,7 +978,7 @@ Here is how you can configure the Symfony2 reverse proxy to support the
             }
 
             $response = new Response();
-            if (!$this->store->purge($request->getUri())) {
+            if (!$this->getStore()->purge($request->getUri())) {
                 $response->setStatusCode(404, 'Not purged');
             } else {
                 $response->setStatusCode(200, 'Purged');
@@ -994,3 +1021,4 @@ Learn more from the Cookbook
 .. _`ESI`: http://www.w3.org/TR/esi-lang
 
 .. 2011/08/27 hidenorigoto dc6a5dc6c6afb671e1000839cb26b8a1d63e1c88
+.. 2012/10/14 gilbite 10598b9a36a4312d8a38cf23caf879da50740e1b  最新のものに追随
